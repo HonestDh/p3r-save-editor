@@ -160,6 +160,32 @@ def encode_name(text: str, slots: int) -> list[int]:
     return [b - 256 if b > 127 else b for b in raw]
 
 
+def _or_blank(value):
+    """Tuples stay tuples: Treeview values must be a flat sequence."""
+    return ("",) if value is None else (value,)
+
+
+def _parse_int(text: str) -> int:
+    """Parse an integer the way a user expects.
+
+    Accepts decimal, ``0x`` hex, and tolerates a leading zero (``08``) which
+    ``int(text, 0)`` rejects.
+    """
+    body = text.strip()
+    sign = 1
+    if body[:1] in "+-":
+        if body[0] == "-":
+            sign = -1
+        body = body[1:]
+    if not body:
+        raise ValueError(text)
+    if body[:2].lower() in ("0x", "0b", "0o"):
+        return sign * int(body, 0)
+    if body.isdigit():
+        return sign * int(body, 10)
+    return sign * int(body, 0)
+
+
 class PropertyRow:
     """One editable row in the field table."""
 
@@ -177,17 +203,36 @@ class PropertyRow:
 
     def apply(self) -> None:
         prop = self.prop
-        text = self.var.get()
+        text = self.var.get().strip()
         if isinstance(prop, gvas.EnumProperty):
             prop.value = text
-        elif isinstance(prop, (gvas.StrProperty, gvas.NameProperty)):
+            return
+        if isinstance(prop, (gvas.StrProperty, gvas.NameProperty)):
             prop.value = text
-        elif isinstance(prop, gvas.FloatProperty):
-            prop.value = float(text)
-        elif isinstance(prop, gvas.BoolProperty):
-            prop.value = text.strip().lower() in ("1", "true", "yes", "on")
-        else:
-            prop.value = int(text, 0)
+            return
+        if isinstance(prop, gvas.BoolProperty):
+            prop.value = text.lower() in ("1", "true", "yes", "on")
+            return
+        if text == "":
+            raise ValueError(f"{prop.name} cannot be empty")
+        try:
+            if isinstance(prop, gvas.FloatProperty):
+                prop.value = float(text)
+            else:
+                prop.value = _parse_int(text)
+        except ValueError:
+            raise ValueError(f"{prop.name}: '{text}' is not a valid number") from None
+
+        limits = {
+            "Int8Property": (-128, 127),
+            "IntProperty": (-2_147_483_648, 2_147_483_647),
+            "Int64Property": (-2**63, 2**63 - 1),
+            "UInt16Property": (0, 65_535),
+            "UInt32Property": (0, 4_294_967_295),
+        }
+        low_high = limits.get(prop.type)
+        if low_high is not None and not low_high[0] <= prop.value <= low_high[1]:
+            raise ValueError(f"{prop.name}: {prop.value} is outside {low_high[0]}..{low_high[1]}")
 
 
 class EditorApp(tk.Tk):
@@ -776,15 +821,19 @@ class EditorApp(tk.Tk):
         view = self.doc.area_view()
         version = self.doc.version
         for field in view.core(version):
-            self.core_vars[field["key"]].set(str(field["value"]))
+            value = field["value"]
+            self.core_vars[field["key"]].set("" if value is None else str(value))
         stats, links = view.social(version)
         for stat in stats:
-            self.stat_vars[stat["key"]].set(str(stat["value"]))
+            value = stat["value"]
+            self.stat_vars[stat["key"]].set("" if value is None else str(value))
             label = self.stat_vars.get(stat["key"] + "__rank")
             if isinstance(label, ttk.Label):
                 label.config(text=stat["rank"] or "")
         for link in links:
-            self.link_vars[str(link["index"] - fields.shift(version))].set(str(link["rank"]))
+            rank = link["rank"]
+            self.link_vars[str(link["index"] - fields.shift(version))].set(
+                "" if rank is None else str(rank))
 
     def refresh_party(self) -> None:
         if self.doc is None:
@@ -793,8 +842,11 @@ class EditorApp(tk.Tk):
         self.party_tree.delete(*self.party_tree.get_children())
         for member in view.party(self.doc.version):
             self.party_tree.insert("", "end", iid=member["key"],
-                                   values=(member["name"], member["level"], member["hp"],
-                                           member["sp"], member["experience"]))
+                                   values=(member["name"],
+                                           *_or_blank(member["level"]),
+                                           *_or_blank(member["hp"]),
+                                           *_or_blank(member["sp"]),
+                                           *_or_blank(member["experience"])))
         diff = view.difficulty(self.doc.version)
         self.diff_var.set(str(diff["id"]) if diff and diff["id"] is not None else "")
 
@@ -900,7 +952,9 @@ class EditorApp(tk.Tk):
             try:
                 row.apply()
             except ValueError as exc:
-                messagebox.showerror("Invalid value", f"{row.prop.name}: {exc}")
+                index = getattr(row.prop, "index", None)
+                where = f"{row.prop.name}[{index}]" if index is not None else row.prop.name
+                messagebox.showerror("Invalid value", f"{where}: {exc}")
                 return
         base = fields.shift(self.doc.version)
         try:
@@ -908,17 +962,25 @@ class EditorApp(tk.Tk):
                 text = self.core_vars[key].get().strip()
                 if not text:
                     continue
-                value = int(text, 0)
+                try:
+                    value = int(text, 0)
+                except ValueError:
+                    raise ValueError(f"{label}: '{text}' is not a whole number")
                 if key == "playTime":
                     value *= fields.PLAY_TIME_TICKS_PER_SECOND
-                if not low <= value <= high:
+                    if not low <= value // fields.PLAY_TIME_TICKS_PER_SECOND <= high // fields.PLAY_TIME_TICKS_PER_SECOND:
+                        raise ValueError(f"{label} must be between {low // 30} and {high // 30} seconds")
+                elif not low <= value <= high:
                     raise ValueError(f"{label} must be between {low} and {high}")
                 self.doc.set_word(index + base, value)
             for key, label, index, _levels in fields.SOCIAL_STATS:
                 text = self.stat_vars[key].get().strip()
                 if not text:
                     continue
-                value = int(text, 0)
+                try:
+                    value = int(text, 0)
+                except ValueError:
+                    raise ValueError(f"{label}: '{text}' is not a whole number")
                 if not 0 <= value <= 255:
                     raise ValueError(f"{label} must be between 0 and 255")
                 self.doc.set_word(index + base, value)
@@ -927,20 +989,29 @@ class EditorApp(tk.Tk):
                 text = var.get().strip()
                 if not text:
                     continue
-                rank = int(text, 0)
+                try:
+                    rank = int(text, 0)
+                except ValueError:
+                    raise ValueError(f"{label}: '{text}' is not a whole number")
                 if not 0 <= rank <= 10:
                     raise ValueError(f"{label} rank must be between 0 and 10")
-                old = self.doc.word_map()[index + base].value
-                self.doc.set_word(index + base, (old & 0xFFFFFF00) | rank)
+                word_index = index + base
+                prop = self.doc.word_map().get(word_index)
+                old = prop.value if prop is not None else 0
+                self.doc.set_word(word_index, (old & 0xFFFFFF00) | rank)
             if self.diff_var.get().strip():
-                wanted = int(self.diff_var.get(), 0)
+                try:
+                    wanted = int(self.diff_var.get(), 0)
+                except ValueError:
+                    raise ValueError(f"Difficulty: '{self.diff_var.get()}' is not a whole number")
                 entry = next((d for d in fields.DIFFICULTIES if d[0] == wanted), None)
                 if entry is None:
                     raise ValueError("Difficulty must be 0-4")
-                word_index = view.find_difficulty_index(self.doc.version)
+                word_index = self.doc.area_view().find_difficulty_index(self.doc.version)
                 if word_index is None:
                     raise ValueError("Could not locate the difficulty word in this save")
-                old = self.doc.word_map()[word_index].value
+                prop = self.doc.word_map().get(word_index)
+                old = prop.value if prop is not None else 0
                 self.doc.set_word(word_index, (old & ~fields.DIFFICULTY_FLAG_MASK) | entry[2])
         except ValueError as exc:
             messagebox.showerror("Invalid value", str(exc))
