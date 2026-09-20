@@ -1,81 +1,70 @@
-﻿# Persona 3 Reload Save Editor
+# Persona 3 Reload Save Editor
 
-Инструмент для декодирования и редактирования сейвов **Persona 3 Reload** (Steam/PC).
+A GUI tool for decoding and editing **Persona 3 Reload** (Steam/PC) save files.
 
-Сейвы игры (`SaveDataNNN.sav`) — это файлы Unreal Engine GVAS, обёрнутые в простую
-обфускацию: побайтовый XOR с повторяющимся 31-байтовым ключом и перестановка двух
-2-битных полей. Проект полностью снимает эту обёртку, разбирает дерево свойств GVAS
-и даёт доступ к игровым данным.
+## Overview
 
-## Возможности
+P3R save files (`SaveDataNNN.sav`) are Unreal Engine 4.27 GVAS containers wrapped in simple obfuscation:
+- XOR with 31-byte key `ae5zeitaix1joowooNgie3fahP5Ohph`
+- Bit swap: positions 0-1 ↔ 4-5
 
-- Декодирование и обратное кодирование `.sav` (побайтово точный round-trip).
-- Просмотр и правка заголовка: имя героя, дата, сложность, уровень, время игры.
-- **Gameplay**: деньги, соц. статы (Учёба/Обаяние/Смелость), 22 соцлинка, сложность.
-- **Party**: уровень, HP, SP и опыт всех членов партии; формация боевого отряда.
-- **Items**: все предметы по 9 категориям с количеством (поиск, фильтр «только имеющиеся»).
-- **Personas**: 12 слотов стока — уровень, 5 статов, 8 слотов скиллов; размещение
-  любой персоны из базы с автоматической регистрацией в Компендиуме.
-- **Compendium**: регистрация и снятие регистрации всех 194 персон.
-- **Raw area**: прямой доступ ко всем словам массива `SaveDataArea`.
-- Экспорт декодированного GVAS и дамп в JSON.
-- Автоматический бэкап при сохранении в `./backup/`.
+This editor removes the wrapper, parses the GVAS tree, and exposes all game data through a Tkinter interface.
 
-## Установка и запуск
+## Features
 
-Требуется Python 3.10+ (стандартная библиотека, внешних зависимостей нет).
+- **Gameplay**: Money, social stats (Academics/Charm/Courage), 22 social links, difficulty
+- **Party**: Level, HP, SP, EXP for all 10 party members; party formation
+- **Items**: 9 categories (Weapons/Armor/Footwear/Accessories/Items/Event Items/Materials/Skill Cards/Costumes) with search/filter
+- **Personas**: 12-slot stock with 5 stats and 8 skill slots; place any persona from the database
+- **Compendium**: Register/unregister all 194 personas
+- **Raw area**: Direct access to all `SaveDataArea` words
+- **Export**: Decoded GVAS and JSON dumps
+- **Backup**: Auto-creates `./backup/` on save
+
+## Requirements
+
+- Python 3.10+ (standard library only, no external dependencies)
+
+## Usage
 
 ```bash
-python p3r_editor.pyw "путь/к/SaveData007.sav"
+python p3r_editor.pyw "path/to/SaveData007.sav"
 ```
 
-Или просто запустите `p3r_editor.pyw` и откройте сейв через меню **File → Open**.
+Or launch the GUI and use **File → Open**.
 
-## Структура проекта
+## File Structure
 
-| Файл | Назначение |
-| --- | --- |
-| `p3r_codec.py` | Обфускация сейва: XOR + перестановка битов, decode/encode |
-| `p3r_gvas.py` | Читатель и писатель контейнера Unreal GVAS |
-| `p3r_fields.py` | Таблицы индексов `SaveDataArea` (ядро, соцлинки, партия) |
-| `p3r_data.py` | Инвентарь, сток персон, Компендиум, формация |
-| `p3r_editor.pyw` | Графический интерфейс (Tkinter) |
-| `data/items.json` | База предметов (4352 записи) |
-| `data/personas.json` | База персон (194 записи) |
-| `data/skills.json` | База скиллов |
+| File | Purpose |
+|------|---------|
+| `p3r_codec.py` | XOR + bit-swap obfuscation (decode/encode) |
+| `p3r_gvas.py` | GVAS container reader/writer (UE 4.27) |
+| `p3r_fields.py` | Index tables for `SaveDataArea` |
+| `p3r_data.py` | Inventory, persona stock, compendium, formation |
+| `p3r_editor.pyw` | Tkinter GUI |
+| `data/items.json` | 4352 item records |
+| `data/personas.json` | 194 persona records |
+| `data/skills.json` | Skill database |
 
-## Как это работает
+## Format Notes
 
-1. **Обфускация.** Каждый байт XOR-ится с ключом `ae5zeitaix1joowooNgie3fahP5Ohph`
-   (31 байт), затем биты 4–5 меняются местами с битами 0–1. После снятия обёртки
-   файл начинается с заголовка `GVAS`.
-2. **GVAS.** Далее идёт стандартное дерево свойств Unreal Engine 4.27: заголовок
-   с версиями и далее плоский список свойств, оканчивающийся записью `None`.
-3. **SaveDataArea.** Почти все игровые значения лежат в одном разреженном массиве
-   `UInt32Property` с числовыми индексами. Соответствие «индекс → параметр» в самом
-   файле не хранится, оно восстановлено по публичным таблицам сообщества и проверено
-   на реальных сейвах.
-4. **Версии формата.** Индексы различаются сдвигом: для `SaveGameVersion` 1 — `+0`,
-   для версии 2 — `+4`. Редактор учитывает это автоматически.
+- `SaveDataArea` is a sparse `UInt32Property` array with numeric indices
+- Version 1 uses indices as-is; Version 2 adds `+4` offset
+- All gameplay values are stored in this single array
 
-## Благодарности
+## Credits
 
-Таблицы индексов и справочные базы предметов/персон/скиллов основаны на открытом
-проекте [Luckyseer/p3r-save-editor](https://github.com/Luckyseer/p3r-save-editor).
+Index tables and data files based on:
+- [Luckyseer/p3r-save-editor](https://github.com/Luckyseer/p3r-save-editor)
+- [illusionyy/P3R-Save-EnDecryptor](https://github.com/illusionyy/P3R-Save-EnDecryptor)
+- [afkaf/Python-GVAS-JSON-Converter](https://github.com/afkaf/Python-GVAS-JSON-Converter)
 
-Дополнительные материалы по формату:
-[illusionyy/P3R-Save-EnDecryptor](https://github.com/illusionyy/P3R-Save-EnDecryptor),
-[afkaf/Python-GVAS-JSON-Converter](https://github.com/afkaf/Python-GVAS-JSON-Converter).
+Persona 3 Reload is a trademark of ATLUS/SEGA. This project is for educational purposes and not affiliated with the rights holders.
 
-Persona 3 Reload — торговая марка ATLUS/SEGA. Проект не связан с правообладателями
-и распространяется в образовательных целях.
+## Warning
 
-## Осторожно
+Save editing may cause corruption or softlocks. Backups are created automatically, but use at your own risk.
 
-Редактирование сейвов может привести к повреждению сохранения или softlock.
-Перед каждой записью создаётся резервная копия в `./backup/`, но ответственность
-за использование инструмента лежит на вас.
-
-## Лицензия
+## License
 
 MIT
